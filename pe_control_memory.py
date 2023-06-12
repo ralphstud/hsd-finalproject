@@ -1,5 +1,5 @@
 from amaranth import *
-from pe_control_sys import PEControl
+from pe_control import PEControl
 
 
 class PEControlMemory(Elaboratable):
@@ -108,9 +108,9 @@ if __name__ == "__main__":
         0x6,
         0x7,
         0x8,
-        # 0x05000708,
-        # 0x01020004,
-        # 0x05060700,
+        0x05000708,
+        0x01020004,
+        0x05060700,
     ]
     dut = PEControlMemory(
         mem_snapshot,
@@ -150,9 +150,10 @@ if __name__ == "__main__":
         with sim.write_vcd(f):
             sim.run()
 
-    # from amaranth.back import verilog
+    from amaranth.back import verilog
 
-    # top = PEWithMemory()
-    # with open(p.with_suffix(".v"), "w") as f:
-    #     f.write(verilog.convert(top, ports=[]))
+    top = PEWithMemory()
+    with open(p.with_suffix(".v"), "w") as f:
+        f.write(verilog.convert(top, ports=[]))
+        print("SAVE")
 

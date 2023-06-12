@@ -312,7 +312,7 @@ def run_sim_unit(memory, res_addr, tile):
                     data = yield dut.mem._array._inner[r_addr + j * tile[0] + i]
                     # uint32 to int32
                     if data > 0x7FFF_FFFF:
-                        data -= 0x1_0000_0000
+                        data -= 0x10_000_0000
                     result[ri, i, j] = data
 
         num_cycles += local_num_cycles
