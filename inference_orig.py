@@ -53,11 +53,10 @@ checkpoint += ".safetensors"
 use_convlowering = True
 use_tiling = True
 use_sim = True
-skip_sim_conv = False
-skip_sim_linear = False
+skip_sim_linear = True
 
 # hardware parameters
-num_bits = int_bitwidth
+num_bits = 8
 width = 32
 g_depth = 4096
 l_depth = 1024
@@ -67,14 +66,11 @@ signed = True
 # NOTE sys_h and sys_w are 0-based
 sys_h = 7
 sys_w = 7
-max_fanin = 192  # maximum fan_in, in number of lines
-max_dotprod = max_fanin * (width // num_bits)  # maximum size of dot product
-assert max_fanin < l_depth
-# minimum data loaded + minimum code length
-# minimum code length = 8
-#   0xCAFE0000, SET_M, FLUSH, LOAD_A, LOAD_W, EXEC, STORE, 0xCAFECAFE
-assert max_fanin * ((sys_w + 1) + (sys_h + 1)) + 8 <= g_depth
+max_dotprod = 512  # size of dot product, NOT fan_in
+# should be multiple of 4 in case of int8 and width=32
+assert max_dotprod % (width // num_bits) == 0
 tile_size = (sys_h + 1, sys_w + 1, max_dotprod)
+
 
 cnt_bits = int(round(np.log2(l_depth)))
 
@@ -301,6 +297,7 @@ def run_sim_unit(memory, res_addr, tile):
         global num_cycles
         local_num_cycles = 0
         data = 0xCAFE0000
+        print(f"{len(res_addr)} runs on this memory")
         while data != 0xCAFE0000 + len(res_addr):
             local_num_cycles += 1
             yield
@@ -308,8 +305,7 @@ def run_sim_unit(memory, res_addr, tile):
         for ri, r_addr in enumerate(res_addr):
             for i in range(tile[0]):
                 for j in range(tile[1]):
-                    # transpose
-                    data = yield dut.mem._array._inner[r_addr + j * tile[0] + i]
+                    data = yield dut.mem._array._inner[r_addr + i * tile[1] + j]
                     # uint32 to int32
                     if data > 0x7FFF_FFFF:
                         data -= 0x1_0000_0000
@@ -329,14 +325,7 @@ def run_sim_unit(memory, res_addr, tile):
 
 
 def run_sim(memories, res_addrs, res_ids, tile, results):
-    assert len(memories) == len(res_addrs)
-    assert len(res_addrs) == len(res_ids)
-    num_mem = len(memories)
-    print(f"{num_mem} memory images")
     for mi, memory in enumerate(memories):
-        print(
-            f"[{mi+1} / {num_mem}] {len(res_addrs[mi])} unit MMs on this memory"
-        )
         result = run_sim_unit(
             memory,
             res_addrs[mi],
@@ -419,9 +408,6 @@ class MemoryBuilder:
         if w is not None:
             if fan_in != self.last_fan_in:
                 # TODO SET_M
-                # switch (sys_h, sys_w) order because of transpose
-                # hardware : x @ w.T
-                # here     : (w @ x.T).T
                 set_m = make_code()
                 self._append_code(set_m)
                 self.last_fan_in = fan_in
@@ -592,7 +578,6 @@ def tiled_mm(
     num_bits=num_bits,
     width=width,
 ):
-    print(w.shape, x.shape)
     batch_size = x.shape[0]
     K = x.shape[1]
     N = x.shape[2]
@@ -625,9 +610,28 @@ def tiled_mm(
             dtype=np.int32,
         )
         results = run_sim(memories, result_addr_2d, result_id_2d, tile, results)
+        results = torch.tensor(results).reshape([-1, tile[0], tile[1]])
+        results = torch.transpose(results, 1, 2)
         print(f"{num_cycles} cycles")
 
-        hw_accum = results
+        hw_accum = torch.zeros(
+            [
+                batch_size,
+                new_M // tile[0],
+                new_N // tile[1],
+                int(np.ceil(new_K / tile[2])),
+                tile[0],
+                tile[1],
+            ],
+            dtype=torch.int32,
+        )
+        ri = 0
+        for result_id_1d in result_id_2d:
+            for b, i, j, k in result_id_1d:
+                for t1 in range(tile[0]):
+                    for t2 in range(tile[1]):
+                        hw_accum[b, i, j, k, t1, t2] += results[ri, t1, t2]
+                ri += 1
 
     # results to accum
     r_index = 0
@@ -636,26 +640,14 @@ def tiled_mm(
             for k in range(int(np.ceil(new_K / tile[2]))):
                 for j in range(new_N // tile[1]):
                     # debug: gt vs hardware on unit MM
-                    w_part = w[
-                        i * tile[0] : (i + 1) * tile[0],
-                        k * max_dotprod : (k + 1) * max_dotprod,
-                    ]
-                    x_part = x[
-                        b,
-                        k * max_dotprod : (k + 1) * max_dotprod,
-                        j * tile[1] : (j + 1) * tile[1],
-                    ]
                     if use_sim:
-                        gt = unit_mm(w_part, x_part)
+                        gt = unit_mm(
+                            w[i * tile[0] : (i + 1) * tile[0], :],
+                            x[b, :, j * tile[1] : (j + 1) * tile[1]],
+                        )
                         hardware = hw_accum[b, i, j, k]
                         if not np.allclose(gt, hardware):
-                            print(f"{b}, {i}, {j}, {k}")
-                            print(f"w: {w_part}")
-                            print(f"x: {x_part}")
-                            print(f"gt: {gt}")
-                            print(f"HW: {hardware}")
-                            print("exiting...")
-                            exit()
+                            print(b, i, j, k)
                     accum[
                         b,
                         i * tile[0] : (i + 1) * tile[0],
@@ -663,7 +655,17 @@ def tiled_mm(
                     ] += (
                         hw_accum[b, i, j, k]
                         if use_sim
-                        else unit_mm(w_part, x_part)
+                        else unit_mm(
+                            w[
+                                i * tile[0] : (i + 1) * tile[0],
+                                k * tile[2] : (k + 1) * tile[2],
+                            ],
+                            x[
+                                b,
+                                k * tile[2] : (k + 1) * tile[2],
+                                j * tile[1] : (j + 1) * tile[1],
+                            ],
+                        )
                     )
                     r_index += 1
 
@@ -703,9 +705,7 @@ class QConv2d(nn.Conv2d):
             )
 
             if use_tiling:
-                mm = tiled_mm(
-                    q_w_int, q_x_int, use_sim=use_sim and not skip_sim_conv
-                )
+                mm = tiled_mm(q_w_int, q_x_int)
             else:
                 mm = q_w_int @ q_x_int
 
@@ -743,7 +743,7 @@ class QLinear(nn.Linear):
         q_w = self.q_w(self.weight)
         q_x = self.q_a(x)
 
-        if use_tiling:
+        if use_tiling and not skip_sim_linear:
             w_step = self.q_w.get_stepsize()
             x_step = self.q_a.get_stepsize()
 
@@ -756,15 +756,14 @@ class QLinear(nn.Linear):
                 q_w_int @ torch.ones_like(q_x_int)
             ).reshape([q_x_int.shape[0], -1])
 
-            mm = tiled_mm(
-                q_w_int, q_x_int, use_sim=use_sim and not skip_sim_linear
-            )
+            mm = tiled_mm(q_w_int, q_x_int)
             mm = mm.reshape([q_x_int.shape[0], -1])
             mm = mm + signedness_bias
             mm = mm * w_step * x_step
 
             if self.bias is not None:
                 mm = mm + self.bias
+            print(mm.shape)
             return mm
         return F.linear(q_x, q_w, bias=self.bias)
 
