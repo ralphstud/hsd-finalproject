@@ -8,6 +8,8 @@ from safetensors.torch import load_model
 import numpy as np
 import lightning as L
 from torchmetrics.classification import Accuracy
+import sys
+sys.setrecursionlimit(10000)
 
 
 np.set_printoptions(precision=5)
@@ -439,13 +441,14 @@ class MemoryBuilder:
             self.data_w.append(w)
 
         # TODO LOAD_A --> EXEC --> REUSE
-        load_a = make_code(OPCODE.LOAD, LOAD_DEST.A, 0) 
+        load_a = make_code(OPCODE.LOAD, LOAD_DEST.A, 0)
         self._append_code(load_a)
 
-        ## TODO TODO: REUSE??
-
-        op_exec = make_code(OPCODE.EXEC, FIFO.REUSE<<2, 0) 
+        op_exec = make_code(OPCODE.EXEC, FIFO.REUSE<<2, 0)
         self._append_code(op_exec)
+
+        store_a = make_code(OPCODE.STORE, 0, 0)
+        self._append_code(store_a)
 
         # TODO store data x (to be used at `get_mem`)
         self.data_x.append(x)
@@ -496,13 +499,13 @@ class MemoryBuilder:
                 dest = (c >> 24) & 0xF
                 if dest == LOAD_DEST.W:
                     # TODO packing (int8 into int32, use `_packing`)
-                    packed = _packing(self.data_w[data_w_i], True)
+                    packed = self._packing(self.data_w[data_w_i], True)
                     # TODO update `data_w_i`
                     data_w_i += 1
 
                     # TODO update address of LOAD_W instruction
-                    mem[i] =  make_code(OPCODE.LOAD, LOAD_DEST.W, result_addrs_i)
-                    result_addrs_i += 1
+                    dest_addr = len(mem) 
+                    mem[i] =  make_code(OPCODE.LOAD, LOAD_DEST.W, dest_addr)
 
                     # append data to memory
                     packed = packed.reshape(-1)
@@ -511,15 +514,17 @@ class MemoryBuilder:
 
                 elif dest == LOAD_DEST.A:
                     # TODO packing (int8 into int32)
-                    packed = _packing(self.data_x[data_x_i], True)
+                    packed = self._packing(self.data_x[data_x_i], True)
                     # TODO update `data_x_i`
                     data_x_i += 1
 
                     # TODO update address of LOAD_A instruction
-                    mem[i] =  make_code(OPCODE.LOAD, LOAD_DEST.A, result_addrs_i)
-                    result_addrs_i += 1
+                    dest_addr = len(mem)
+                    mem[i] =  make_code(OPCODE.LOAD, LOAD_DEST.A, dest_addr)
 
                     # TODO memo destination of STORE instruction
+                    w, h = packed.shape
+                    result_addr_1d.append(dest_addr)
 
                     # append data to memory
                     packed = packed.reshape(-1)

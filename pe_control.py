@@ -531,6 +531,7 @@ class PEControl(Elaboratable):
                 with m.Else():
                     m.d.sync += [
                         # out_w_en is set 0 when STATECODE == FETCH
+                        self.addr_io.eq(0),
                         self.out_w_data.eq(self.magic_cnt),
                     ]
                     m.next = STATECODE.FETCH
