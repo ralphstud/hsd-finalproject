@@ -422,17 +422,33 @@ class MemoryBuilder:
                 # switch (sys_h, sys_w) order because of transpose
                 # hardware : x @ w.T
                 # here     : (w @ x.T).T
-                set_m = make_code()
+                set_m_v2 = ((sys_h << sys_size_bit)+sys_w)<<cnt_bits+fan_in
+                set_m = make_code(OPCODE.SET_M, 0, set_m_v2)
                 self._append_code(set_m)
                 self.last_fan_in = fan_in
 
             # TODO FLUSH --> LOAD_W
+            flush = make_code(OPCODE.FLUSH)
+            self._append_code(flush)
+
             # NOTE LOAD_W requires address to be set.
             # Set specific address later at `get_mem`
+            load_w = make_code(OPCODE.LOAD, LOAD_DEST.W, 0) 
+            self._append_code(load_w)
             # TODO store data w (to be used at `get_mem`)
+            self.data_w.append(w)
 
         # TODO LOAD_A --> EXEC --> REUSE
+        load_a = make_code(OPCODE.LOAD, LOAD_DEST.A, 0) 
+        self._append_code(load_a)
+
+        ## TODO TODO: REUSE??
+
+        op_exec = make_code(OPCODE.EXEC, FIFO.REUSE<<2, 0) 
+        self._append_code(op_exec)
+
         # TODO store data x (to be used at `get_mem`)
+        self.data_x.append(x)
 
         self.result_id_1d.append(id)
 
@@ -480,9 +496,13 @@ class MemoryBuilder:
                 dest = (c >> 24) & 0xF
                 if dest == LOAD_DEST.W:
                     # TODO packing (int8 into int32, use `_packing`)
+                    packed = _packing(self.data_w[data_w_i], True)
                     # TODO update `data_w_i`
+                    data_w_i += 1
 
                     # TODO update address of LOAD_W instruction
+                    mem[i] =  make_code(OPCODE.LOAD, LOAD_DEST.W, result_addrs_i)
+                    result_addrs_i += 1
 
                     # append data to memory
                     packed = packed.reshape(-1)
@@ -491,9 +511,13 @@ class MemoryBuilder:
 
                 elif dest == LOAD_DEST.A:
                     # TODO packing (int8 into int32)
+                    packed = _packing(self.data_x[data_x_i], True)
                     # TODO update `data_x_i`
+                    data_x_i += 1
 
                     # TODO update address of LOAD_A instruction
+                    mem[i] =  make_code(OPCODE.LOAD, LOAD_DEST.A, result_addrs_i)
+                    result_addrs_i += 1
 
                     # TODO memo destination of STORE instruction
 
@@ -572,6 +596,7 @@ def compile_mm(
                         result_id_2d.append(result_id_1d)
 
                         # TODO reset mb
+                        mb = MemoryBuilder()
     # TODO handle trailing instructions
 
     return memories, result_addr_2d, result_id_2d
