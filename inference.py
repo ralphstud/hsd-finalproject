@@ -514,7 +514,7 @@ class MemoryBuilder:
 
                 elif dest == LOAD_DEST.A:
                     # TODO packing (int8 into int32)
-                    packed = self._packing(self.data_x[data_x_i], True)
+                    packed = self._packing(self.data_x[data_x_i], False)
                     # TODO update `data_x_i`
                     data_x_i += 1
 

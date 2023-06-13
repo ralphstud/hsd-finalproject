@@ -336,13 +336,13 @@ class PEControl(Elaboratable):
                             # convert r_mode -> w_mode
                             with m.If(self.v1 == LOAD_DEST.A):
                                 m.d.sync += [
-                                    self.lb_a_arr[0].w_rdy.eq(1),
+                                    self.lb_a_arr[0].w_en.eq(1),
                                     self.sys_h_cnt.eq(0),
                                     self.sys_w_cnt.eq(0)
                                 ]
                             with m.Else():
                                 m.d.sync += [
-                                    self.lb_b_arr[0].w_rdy.eq(1),
+                                    self.lb_b_arr[0].w_en.eq(1),
                                     self.sys_h_cnt.eq(0),
                                     self.sys_w_cnt.eq(0)
                                 ]
